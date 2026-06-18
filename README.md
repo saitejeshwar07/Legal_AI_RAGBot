@@ -277,14 +277,22 @@ http://localhost:5173
 # 📸 Screenshots
 
 Include screenshots of:
+# 📸 Screenshots
+## Home Page
 
-1. Home Screen
-2. Chat Interface
-3. Source References
-4. Chat History Sidebar
-5. Legal Search Results
+![Home Page](ss/home.png)
 
----
+## Chat Interface
+
+![Chat Interface](ss/chat.png)
+
+## Source References
+
+![Sources](ss/sources.png)
+
+## Chat History
+
+![History](ss/history.png)
 
 # 👨‍💻 Author
 
