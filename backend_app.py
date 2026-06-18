@@ -9,64 +9,172 @@ print("🔹 Loading FAISS vectorstore and initializing RAG pipeline...")
 vector_store = load_vectorstore()
 qa_chain, log_top_matches = build_qa_chain(vector_store)
 
+# Simple conversation memory
+chat_history = []
+
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "Backend running successfully."})
+    return jsonify({
+        "status": "ok",
+        "message": "Backend running successfully."
+    })
 
 
 @app.route("/query", methods=["POST"])
 def query():
     try:
-        # --- Read and preprocess the query ---
+        # Read request
         data = request.get_json(force=True, silent=True) or {}
         user_query = data.get("query", "") or data.get("question", "")
+
         processed_query = preprocess_query(user_query)
+
+        # Add conversation memory
+        history_context = "\n".join(chat_history[-6:])
+
+        if history_context:
+            processed_query = f"""
+Previous Conversation:
+{history_context}
+
+Current Question:
+{processed_query}
+"""
 
         print(f"\n🧠 User Query: {user_query}")
         print(f"🔍 Processed Query: {processed_query}")
 
-        # --- Retrieve top matching docs for transparency ---
+        # Show retrieval logs
         log_top_matches(processed_query)
 
-        # --- Universal model call ---
         print("🔧 Running RAG pipeline...")
 
         try:
-            # 1️⃣ try the common case (query)
-            response = qa_chain.invoke({"query": processed_query})
-        except Exception as e1:
-            try:
-                # 2️⃣ fallback (question)
-                response = qa_chain.invoke({"question": processed_query})
-            except Exception as e2:
-                # 3️⃣ last-resort manual call
-                print("⚠️ Using manual fallback LLM call")
-                docs = qa_chain.retriever.get_relevant_documents(processed_query)
-                context = "\n\n".join([d.page_content for d in docs[:5]])
-                prompt = f"Question: {processed_query}\n\nContext:\n{context}"
-                answer_text = qa_chain.combine_documents_chain.llm_chain.llm.invoke(prompt)
-                response = {"result": str(answer_text), "source_documents": docs}
-
-        # --- Extract results ---
-        answer = response.get("result", "No answer generated.")
-        source_docs = response.get("source_documents", [])
-
-        sources = []
-        for doc in source_docs:
-            meta = doc.metadata or {}
-            doc_type = meta.get("type", "unknown")
-            title = meta.get("section_heading", meta.get("case_title", "N/A"))
-            preview = doc.page_content[:200].replace("\n", " ")
-
-            sources.append({
-                "type": doc_type,
-                "file": meta.get("source", "unknown"),
-                "title": title,
-                "preview": preview,
-                "link": meta.get("pdf_url", None)   # ✅ Add this line
+            response = qa_chain.invoke({
+                "query": processed_query
             })
 
+        except Exception:
+            try:
+                response = qa_chain.invoke({
+                    "question": processed_query
+                })
+
+            except Exception:
+                print("⚠️ Using manual fallback LLM call")
+
+                docs = qa_chain.retriever.get_relevant_documents(
+                    processed_query
+                )
+
+                context = "\n\n".join(
+                    [d.page_content for d in docs[:5]]
+                )
+
+                prompt = f"""
+Question:
+{processed_query}
+
+Context:
+{context}
+"""
+
+                answer_text = (
+                    qa_chain
+                    .combine_documents_chain
+                    .llm_chain
+                    .llm
+                    .invoke(prompt)
+                )
+
+                if hasattr(answer_text, "content"):
+                    answer_text = answer_text.content
+
+                response = {
+                    "result": answer_text,
+                    "source_documents": docs
+                }
+
+        # Extract answer
+        answer = response.get(
+            "result",
+            "No answer generated."
+        )
+
+        try:
+            if hasattr(answer, "content"):
+                answer = answer.content
+
+            elif (
+                "content='" in str(answer)
+                and "response_metadata" in str(answer)
+            ):
+                text = str(answer)
+
+                start = (
+                    text.find("content='")
+                    + len("content='")
+                )
+
+                end = text.find(
+                    "' response_metadata"
+                )
+
+                answer = text[start:end]
+
+            else:
+                answer = str(answer)
+
+        except Exception:
+            answer = str(answer)
+
+        # Save memory
+        chat_history.append(
+            f"User: {user_query}"
+        )
+
+        chat_history.append(
+            f"Assistant: {answer}"
+        )
+
+        # Keep only recent memory
+        if len(chat_history) > 20:
+            chat_history[:] = chat_history[-20:]
+
+        source_docs = response.get(
+            "source_documents",
+            []
+        )
+
+        sources = []
+
+        for doc in source_docs:
+            meta = doc.metadata or {}
+
+            sources.append({
+                "type": meta.get(
+                    "type",
+                    "unknown"
+                ),
+                "file": meta.get(
+                    "source",
+                    "unknown"
+                ),
+                "title": meta.get(
+                    "section_heading",
+                    meta.get(
+                        "case_title",
+                        "N/A"
+                    )
+                ),
+                "preview": doc.page_content[:200]
+                .replace("\n", " "),
+                "link": meta.get(
+                    "pdf_url",
+                    None
+                )
+            })
 
         return jsonify({
             "query": user_query,
@@ -77,8 +185,15 @@ def query():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)})
+
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=8000,
+        debug=True
+    )
